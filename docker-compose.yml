@@ -1,0 +1,125 @@
+services:
+  database:
+    image: postgres:15-alpine
+    container_name: prueba_tecnica_db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-prueba_tecnica}
+      POSTGRES_USER: ${DB_USER:-testuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-testpass}
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-testuser} -d ${DB_NAME:-prueba_tecnica}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - prueba_tecnica_network
+
+  data-processor:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.data-processor
+    container_name: prueba_tecnica_processor
+    environment:
+      - DB_HOST=database
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-prueba_tecnica}
+      - DB_USER=${DB_USER:-testuser}
+      - DB_PASSWORD=${DB_PASSWORD:-testpass}
+      - PYTHONPATH=/app
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - BATCH_SIZE=${BATCH_SIZE:-1000}
+      - MAX_WORKERS=${MAX_WORKERS:-4}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - prueba_tecnica_network
+    profiles:
+      - data-processing
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: prueba_tecnica_api
+    environment:
+      - DB_HOST=database
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-prueba_tecnica}
+      - DB_USER=${DB_USER:-testuser}
+      - DB_PASSWORD=${DB_PASSWORD:-testpass}
+      - PYTHONPATH=/app
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - API_HOST=${API_HOST:-0.0.0.0}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - prueba_tecnica_network
+    profiles:
+      - api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Development service that includes both API and data processing capabilities
+  dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: prueba_tecnica_dev
+    environment:
+      - DB_HOST=database
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-prueba_tecnica}
+      - DB_USER=${DB_USER:-testuser}
+      - DB_PASSWORD=${DB_PASSWORD:-testpass}
+      - PYTHONPATH=/app
+      - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
+      - ENVIRONMENT=development
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./tests:/app/tests
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - prueba_tecnica_network
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    profiles:
+      - dev
+
+volumes:
+  postgres_data:
+
+networks:
+  prueba_tecnica_network:
+    driver: bridge
